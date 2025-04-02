@@ -207,61 +207,94 @@ if __name__ == '__main__':
         torch.cuda.synchronize()
         start_time = time.time()
         if args.perform_tile:
-            # tile_height = tile_width = 320
+            # 确保tile尺寸与缩放因子匹配
             tile_height = tile_width = args.tile_size
-            # 调整重叠区域大小与缩放因子成比例
-            tile_overlap_height = tile_overlap_width = int(64 * (args.scale_factor / 4))  # 根据缩放因子调整重叠区域
-            tile_overlap_height = max(32, tile_overlap_height)  # 确保最小重叠区域
-            tile_overlap_width = max(32, tile_overlap_width)
+            # 增加重叠区域以解决缝隙问题
+            tile_overlap_height = tile_overlap_width = max(64, int(128 * (args.scale_factor / 4)))
             output_h = h * args.scale_factor
             output_w = w * args.scale_factor
             output_shape = (b, c, t, output_h, output_w)  
-            # start with black image
+            # 使用全0初始化输出
             output = vframes.new_zeros(output_shape)
-            tiles_x = math.ceil(w / tile_width)
-            tiles_y = math.ceil(h / tile_height)
+            
+            # 重新计算tile数量，确保覆盖整个图像
+            effective_tile_width = tile_width - 2 * (tile_overlap_width // args.scale_factor)
+            effective_tile_height = tile_height - 2 * (tile_overlap_height // args.scale_factor)
+            
+            tiles_x = max(1, math.ceil(w / effective_tile_width))
+            tiles_y = max(1, math.ceil(h / effective_tile_height))
             print(f'{index_str} Processing the video w/ tile patches [{tiles_x}x{tiles_y}]...')  
 
+            # 创建融合权重mask，用于平滑拼接边界
+            def get_blend_mask(height, width):
+                mask = torch.ones((1, 1, 1, height, width), device=UAV_device)
+                # 用正弦函数在边缘创建过渡
+                blend_width = min(tile_overlap_width, width // 4)
+                blend_height = min(tile_overlap_height, height // 4)
+                
+                # 创建水平和垂直过渡区域
+                if blend_width > 0:
+                    for x in range(blend_width):
+                        mask[:, :, :, :, x] *= math.sin(0.5 * math.pi * x / blend_width)
+                        mask[:, :, :, :, width-x-1] *= math.sin(0.5 * math.pi * x / blend_width)
+                
+                if blend_height > 0:
+                    for y in range(blend_height):
+                        mask[:, :, :, y, :] *= math.sin(0.5 * math.pi * y / blend_height)
+                        mask[:, :, :, height-y-1, :] *= math.sin(0.5 * math.pi * y / blend_height)
+                        
+                return mask
+
+            # 创建用于累积权重的tensor
+            weights_sum = torch.zeros_like(output)
+
             rm_end_pad_w, rm_end_pad_h = True, True
-            if (tiles_x - 1) * tile_width + tile_overlap_width >= w:
-                tiles_x = tiles_x - 1
+            if (tiles_x - 1) * effective_tile_width >= w:
+                tiles_x = max(1, tiles_x - 1)
                 rm_end_pad_w = False
                 
-            if (tiles_y - 1) * tile_height + tile_overlap_height >= h:
-                tiles_y = tiles_y - 1 
+            if (tiles_y - 1) * effective_tile_height >= h:
+                tiles_y = max(1, tiles_y - 1)
                 rm_end_pad_h = False
 
             # loop over all tiles
             for y in range(tiles_y):
                 for x in range(tiles_x):
                     print(f"\ttile: [{y+1}/{tiles_y}] x [{x+1}/{tiles_x}]")
-                    # extract tile from input image
-                    ofs_x = x * tile_width
-                    ofs_y = y * tile_height
-                    # input tile area on total image
+                    # 计算tile位置，确保最后一个tile覆盖到图像边缘
+                    if x == tiles_x - 1 and not rm_end_pad_w:
+                        ofs_x = w - tile_width
+                        ofs_x = max(0, ofs_x)
+                    else:
+                        ofs_x = x * effective_tile_width
+                    
+                    if y == tiles_y - 1 and not rm_end_pad_h:
+                        ofs_y = h - tile_height
+                        ofs_y = max(0, ofs_y)
+                    else:
+                        ofs_y = y * effective_tile_height
+                    
+                    # 确保不会超出图像边界
                     input_start_x = ofs_x
                     input_end_x = min(ofs_x + tile_width, w)
                     input_start_y = ofs_y
                     input_end_y = min(ofs_y + tile_height, h)
-                    # input tile area on total image with padding
-                    input_start_x_pad = max(input_start_x - tile_overlap_width, 0)
-                    input_end_x_pad = min(input_end_x + tile_overlap_width, w)
-                    input_start_y_pad = max(input_start_y - tile_overlap_height, 0)
-                    input_end_y_pad = min(input_end_y + tile_overlap_height, h)
-                    # input tile dimensions
-                    input_tile_width = input_end_x - input_start_x
-                    input_tile_height = input_end_y - input_start_y
-                    tile_idx = y * tiles_x + x + 1
-                    input_tile = vframes[:, :, :, input_start_y_pad:input_end_y_pad, input_start_x_pad:input_end_x_pad]
+                    
+                    # 提取tile
+                    input_tile = vframes[:, :, :, input_start_y:input_end_y, input_start_x:input_end_x]
                     if flows_bi is not None:
                         flows_bi_tile = [
-                            flows_bi[0][:, :, :, input_start_y_pad:input_end_y_pad, input_start_x_pad:input_end_x_pad],
-                            flows_bi[1][:, :, :, input_start_y_pad:input_end_y_pad, input_start_x_pad:input_end_x_pad]
+                            flows_bi[0][:, :, :, input_start_y:input_end_y, input_start_x:input_end_x],
+                            flows_bi[1][:, :, :, input_start_y:input_end_y, input_start_x:input_end_x]
                         ]
                     else:
                         flows_bi_tile = None
-                        
-                    # upscale tile
+                    
+                    # 处理边缘情况，如果tile太小，则调整大小
+                    if input_tile.shape[-1] < 32 or input_tile.shape[-2] < 32:
+                        continue
+                    
+                    # 处理tile
                     try:
                         with torch.no_grad():
                             output_tile = pipeline(
@@ -277,36 +310,26 @@ if __name__ == '__main__':
                             ).images # C T H W [-1, 1]
                     except RuntimeError as error:
                         print('Error', error)
+                        continue
 
-                    # output tile area on total image
-                    output_start_x = input_start_x * args.scale_factor
-                    if x == tiles_x-1 and rm_end_pad_w == False:
-                        output_end_x = output_w
-                    else:
-                        output_end_x = input_end_x * args.scale_factor
-
-                    output_start_y = input_start_y * args.scale_factor
-                    if y == tiles_y-1 and rm_end_pad_h == False:
-                        output_end_y = output_h
-                    else:
-                        output_end_y = input_end_y * args.scale_factor
-
-                    # output tile area without padding
-                    output_start_x_tile = (input_start_x - input_start_x_pad) * args.scale_factor
-                    if x == tiles_x-1 and rm_end_pad_w == False:
-                        output_end_x_tile = output_start_x_tile + output_w - output_start_x
-                    else:
-                        output_end_x_tile = output_start_x_tile + input_tile_width * args.scale_factor
-                    output_start_y_tile = (input_start_y - input_start_y_pad) * args.scale_factor
-                    if y == tiles_y-1 and rm_end_pad_h == False:
-                        output_end_y_tile = output_start_y_tile + output_h - output_start_y
-                    else:
-                        output_end_y_tile = output_start_y_tile + input_tile_height * args.scale_factor
-
-                    # put tile into output image
-                    output[:, :, :, output_start_y:output_end_y, output_start_x:output_end_x] = \
-                        output_tile[:, :, :, output_start_y_tile:output_end_y_tile,
-                                             output_start_x_tile:output_end_x_tile]
+                    # 计算输出tile在整个输出图像中的位置
+                    out_start_x = input_start_x * args.scale_factor
+                    out_end_x = input_end_x * args.scale_factor
+                    out_start_y = input_start_y * args.scale_factor
+                    out_end_y = input_end_y * args.scale_factor
+                    
+                    # 创建融合mask
+                    mask = get_blend_mask(out_end_y - out_start_y, out_end_x - out_start_x)
+                    
+                    # 将输出tile融合到最终输出中
+                    output[:, :, :, out_start_y:out_end_y, out_start_x:out_end_x] += output_tile * mask
+                    weights_sum[:, :, :, out_start_y:out_end_y, out_start_x:out_end_x] += mask
+            
+            # 避免除零错误
+            weights_sum = weights_sum.clamp(min=1e-8)
+            
+            # 根据权重对输出进行标准化
+            output = output / weights_sum
         else:
             print(f'{index_str} Processing the video w/o tile...')
             try:
