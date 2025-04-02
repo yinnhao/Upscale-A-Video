@@ -125,7 +125,7 @@ if __name__ == '__main__':
     # load propagator
     if not args.propagation_steps == []:
         raft = RAFT_bi("./pretrained_models/upscale_a_video/propagator/raft-things.pth")
-        propagator = Propagation(4, learnable=False)
+        propagator = Propagation(args.scale_factor, learnable=False)
     else:
         raft, propagator = None, None
 
@@ -209,7 +209,10 @@ if __name__ == '__main__':
         if args.perform_tile:
             # tile_height = tile_width = 320
             tile_height = tile_width = args.tile_size
-            tile_overlap_height = tile_overlap_width = 64 # should be >= 64
+            # 调整重叠区域大小与缩放因子成比例
+            tile_overlap_height = tile_overlap_width = int(64 * (args.scale_factor / 4))  # 最小为16
+            tile_overlap_height = max(16, tile_overlap_height)
+            tile_overlap_width = max(16, tile_overlap_width)
             output_h = h * args.scale_factor
             output_w = w * args.scale_factor
             output_shape = (b, c, t, output_h, output_w)  
@@ -271,6 +274,7 @@ if __name__ == '__main__':
                                 noise_level=args.noise_level,
                                 negative_prompt=args.n_prompt,
                                 propagation_steps=args.propagation_steps,
+                                scale_factor=args.scale_factor,
                             ).images # C T H W [-1, 1]
                     except RuntimeError as error:
                         print('Error', error)
@@ -318,6 +322,7 @@ if __name__ == '__main__':
                         noise_level=args.noise_level,
                         negative_prompt=args.n_prompt,
                         propagation_steps=args.propagation_steps,
+                        scale_factor=args.scale_factor,
                     ).images # C T H W [-1, 1]
             except RuntimeError as error:
                 print('Error', error)
