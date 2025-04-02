@@ -87,6 +87,8 @@ if __name__ == '__main__':
     parser.add_argument('--tile_size', type=int, default=256)
     parser.add_argument('--save_image', action='store_true', default=False)
     parser.add_argument('--save_suffix', type=str, default='')
+    parser.add_argument('--scale_factor', type=int, default=4, 
+            help='The factor by which to upscale the video (e.g., 2, 3, 4). Default: 4')
     args = parser.parse_args()
 
     use_llava = not args.no_llava
@@ -208,8 +210,8 @@ if __name__ == '__main__':
             # tile_height = tile_width = 320
             tile_height = tile_width = args.tile_size
             tile_overlap_height = tile_overlap_width = 64 # should be >= 64
-            output_h = h * 4
-            output_w = w * 4
+            output_h = h * args.scale_factor
+            output_w = w * args.scale_factor
             output_shape = (b, c, t, output_h, output_w)  
             # start with black image
             output = vframes.new_zeros(output_shape)
@@ -274,29 +276,29 @@ if __name__ == '__main__':
                         print('Error', error)
 
                     # output tile area on total image
-                    output_start_x = input_start_x * 4
+                    output_start_x = input_start_x * args.scale_factor
                     if x == tiles_x-1 and rm_end_pad_w == False:
                         output_end_x = output_w
                     else:
-                        output_end_x = input_end_x * 4
+                        output_end_x = input_end_x * args.scale_factor
 
-                    output_start_y = input_start_y * 4
+                    output_start_y = input_start_y * args.scale_factor
                     if y == tiles_y-1 and rm_end_pad_h == False:
                         output_end_y = output_h
                     else:
-                        output_end_y = input_end_y * 4
+                        output_end_y = input_end_y * args.scale_factor
 
                     # output tile area without padding
-                    output_start_x_tile = (input_start_x - input_start_x_pad) * 4
+                    output_start_x_tile = (input_start_x - input_start_x_pad) * args.scale_factor
                     if x == tiles_x-1 and rm_end_pad_w == False:
                         output_end_x_tile = output_start_x_tile + output_w - output_start_x
                     else:
-                        output_end_x_tile = output_start_x_tile + input_tile_width * 4
-                    output_start_y_tile = (input_start_y - input_start_y_pad) * 4
+                        output_end_x_tile = output_start_x_tile + input_tile_width * args.scale_factor
+                    output_start_y_tile = (input_start_y - input_start_y_pad) * args.scale_factor
                     if y == tiles_y-1 and rm_end_pad_h == False:
                         output_end_y_tile = output_start_y_tile + output_h - output_start_y
                     else:
-                        output_end_y_tile = output_start_y_tile + input_tile_height * 4
+                        output_end_y_tile = output_start_y_tile + input_tile_height * args.scale_factor
 
                     # put tile into output image
                     output[:, :, :, output_start_y:output_end_y, output_start_x:output_end_x] = \
@@ -324,7 +326,7 @@ if __name__ == '__main__':
         if args.color_fix in ['AdaIn', 'Wavelet']:
             vframes = rearrange(vframes.squeeze(0), 'c t h w -> t c h w').contiguous()
             output = rearrange(output.squeeze(0), 'c t h w -> t c h w').contiguous()
-            vframes = F.interpolate(vframes, scale_factor=4, mode='bicubic')
+            vframes = F.interpolate(vframes, scale_factor=args.scale_factor, mode='bicubic')
             if args.color_fix == 'AdaIn':
                 output = adaptive_instance_normalization(output, vframes)
             elif args.color_fix == 'Wavelet':
@@ -340,7 +342,7 @@ if __name__ == '__main__':
         ## ---------------------- saving output ----------------------
         prop = '_p' + '_'.join(map(str, args.propagation_steps)) if not args.propagation_steps == [] else ''
         suffix = '_' + args.save_suffix if not args.save_suffix == '' else ''
-        save_name = f"{video_name}_n{args.noise_level}_g{args.guidance_scale}_s{args.inference_steps}{prop}{suffix}"
+        save_name = f"{video_name}_n{args.noise_level}_g{args.guidance_scale}_s{args.inference_steps}_x{args.scale_factor}{prop}{suffix}"
         # save image
         if args.save_image:
             save_img_root = os.path.join(args.output_path, 'frame')
