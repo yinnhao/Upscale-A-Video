@@ -1,5 +1,5 @@
-torch==2.0.1
-torchvision
+# torch==2.0.1
+# torchvision
 accelerate==0.18.0
 av==9.1.0
 decord==0.6.0
